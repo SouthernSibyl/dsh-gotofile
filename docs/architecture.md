@@ -1,7 +1,8 @@
 # 架构说明（dsh-GotoFile）
 
 零依赖、无构建。两个源码文件：`lib/index.js`（宿主半）+ `lib/client.js`（浏览器半，
-`window.__ModuleLoader__` bundle 格式）。测试在 `test/host.test.js`（`node --test`）。
+`window.__ModuleLoader__` bundle 格式）。测试在 `test/host.test.js`（`node --test`，裸克隆可直接跑：
+宿主半对 `@deepseek-ai/schemastery` 的依赖是懒加载的，脱离 DSH 时退回恒等形态）。
 
 ## 目标
 

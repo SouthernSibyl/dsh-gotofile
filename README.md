@@ -86,8 +86,11 @@ DSH 的官方「改动文件」卡片只活在浏览器里：要离开 GUI 读�
 ## 开发
 
 ```bash
-node --test
+node --test        # 18 个单测，零依赖、无需 npm install
 ```
+
+宿主半对 `@deepseek-ai/schemastery` 的依赖是**懒加载**的（挂载时才解析真包，解析不到就退回恒等形态），
+所以这个仓库可以被单独克隆出来直接跑测试，不必放在 DSH profile 里。
 
 ## 已知边界
 
