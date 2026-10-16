@@ -101,3 +101,17 @@ node --test        # 18 个单测，零依赖、无需 npm install
 ## License
 
 MIT
+
+---
+
+## 打赏
+
+本项目为个人爱好驱动的开源插件，如果帮助到了您，欢迎各位大老板顺手请我喝杯咖啡，非常感谢打赏！
+
+<table>
+  <tr>
+    <td align="center"><b>微信</b><br><img src="assets/wechat.png" alt="微信赞赏码" width="240"></td>
+    <td align="center"><b>支付宝</b><br><img src="assets/alipay.png" alt="支付宝收款码" width="240"></td>
+  </tr>
+</table>
+

@@ -17,7 +17,8 @@
     "lib",
     "cordis.patch.yml",
     "docs",
-    "test"
+    "test",
+    "assets"
   ],
   "keywords": [
     "dsh",
