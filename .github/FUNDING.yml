@@ -1,0 +1,3 @@
+# GitHub 仓库页右上角的 Sponsor 按钮。
+# 中国境内不能开通 GitHub Sponsors 本体（需要 Stripe），所以用 custom 指向仓库内的打赏说明页。
+custom: ["https://github.com/SouthernSibyl/dsh-gotofile#%E6%89%93%E8%B5%8F"]
