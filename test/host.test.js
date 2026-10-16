@@ -1,0 +1,197 @@
+/**
+ * dsh-GotoFile Host 半 — 单元测试（node --test，零依赖）
+ *
+ * 覆盖：工具调用 → 被改动路径的映射、call/result 配对与失败丢弃、
+ *       new/edit 判定、单轮上限、官方摘要补漏去重、路径安全口径。
+ */
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { resolve, sep } from 'node:path'
+
+import {
+  parseArgs,
+  mutationOf,
+  candidateAbs,
+  displayPath,
+  isWithin,
+  isProbeable,
+  isSameOrigin,
+  normalizeRoots,
+  newRecorder,
+  recordPath,
+  onSessionEvent,
+  assembleReport,
+} from '../lib/index.js'
+
+/** 模拟平台路径拼接（测试跨平台可跑） */
+const join = (...parts) => parts.join(sep)
+const CWD = resolve(process.cwd())
+
+// ── 参数解析 ──────────────────────────────────────────────────────────────
+
+test('parseArgs 接受 JSON 字符串与对象，坏输入返回 undefined', () => {
+  assert.deepEqual(parseArgs('{"a":1}'), { a: 1 })
+  assert.deepEqual(parseArgs({ a: 1 }), { a: 1 })
+  assert.equal(parseArgs('not json'), undefined)
+  assert.equal(parseArgs(null), undefined)
+  assert.equal(parseArgs(42), undefined)
+})
+
+// ── 写类工具 → 路径 ───────────────────────────────────────────────────────
+
+test('mutationOf: write 是声明新建', () => {
+  assert.deepEqual(mutationOf('write', { file_path: 'a/b.txt' }), { paths: ['a/b.txt'], declaredNew: true })
+})
+
+test('mutationOf: edit 用 old_string 是否为空区分新建', () => {
+  assert.deepEqual(mutationOf('edit', { file_path: 'a.txt', old_string: '', new_string: 'x' }), { paths: ['a.txt'], declaredNew: true })
+  assert.deepEqual(mutationOf('edit', { file_path: 'a.txt', old_string: 'x', new_string: 'y' }), { paths: ['a.txt'], declaredNew: false })
+})
+
+test('mutationOf: str_replace_editor 只认 create/str_replace/insert', () => {
+  assert.equal(mutationOf('str_replace_editor', { command: 'view', path: 'a.txt' }), null)
+  assert.deepEqual(mutationOf('str_replace_editor', { command: 'create', path: 'a.txt' }), { paths: ['a.txt'], declaredNew: true })
+  assert.deepEqual(mutationOf('str_replace_editor', { command: 'str_replace', path: 'a.txt' }), { paths: ['a.txt'], declaredNew: false })
+})
+
+test('mutationOf: ops_replace 收 path 与非否定 glob，只读工具不登记', () => {
+  assert.deepEqual(
+    mutationOf('ops_replace', { path: 'src', pattern: 'a', replacement: 'b', glob: ['*.ts', '!*.test.ts'] }),
+    { paths: ['src', '*.ts'], declaredNew: false },
+  )
+  for (const name of ['ops_bash', 'ops_grep', 'ops_glob', 'ops_inspect_local_file', 'present', undefined]) {
+    assert.equal(mutationOf(name, { file_path: 'a.txt' }), null, String(name))
+  }
+})
+
+// ── call / result 配对 ────────────────────────────────────────────────────
+
+const toolCall = (name, args, callId, turn) => ({
+  type: 'tool/call',
+  data: { turn, step: 1, callId, name, arguments: JSON.stringify(args) },
+})
+const toolResult = (callId, isError, turn) => ({
+  type: 'tool/result',
+  data: { turn, step: 1, toolCallId: callId, message: { role: 'tool', toolCallId: callId, isError } },
+})
+
+test('成功的 write 被登记为 new，失败的 write 一律丢弃', () => {
+  const rec = newRecorder(CWD)
+  onSessionEvent(rec, toolCall('write', { file_path: 'ok.txt' }, 'c1', 1), 200)
+  onSessionEvent(rec, toolResult('c1', false, 1), 200)
+  onSessionEvent(rec, toolCall('write', { file_path: 'bad.txt' }, 'c2', 1), 200)
+  onSessionEvent(rec, toolResult('c2', true, 1), 200)
+  const list = rec.turns.get(1)
+  assert.equal(list.length, 1)
+  assert.equal(list[0].abs, join(CWD, 'ok.txt'))
+  assert.equal(list[0].op, 'new')
+})
+
+test('没有对应 result 的调用不登记（只读/流中未结算）', () => {
+  const rec = newRecorder(CWD)
+  onSessionEvent(rec, toolCall('write', { file_path: 'pending.txt' }, 'c9', 1), 200)
+  assert.equal(rec.turns.size, 0)
+  assert.equal(rec.pending.size, 1)
+})
+
+test('同一文件先 write 后 edit：第一次 new，第二次 edit 且不重复', () => {
+  const rec = newRecorder(CWD)
+  onSessionEvent(rec, toolCall('write', { file_path: 'same.txt' }, 'a', 1), 200)
+  onSessionEvent(rec, toolResult('a', false, 1), 200)
+  onSessionEvent(rec, toolCall('edit', { file_path: 'same.txt', old_string: '', new_string: 'x' }, 'b', 2), 200)
+  onSessionEvent(rec, toolResult('b', false, 2), 200)
+  assert.equal(rec.turns.get(1)[0].op, 'new')
+  assert.equal(rec.turns.get(2)[0].op, 'edit', 'known 已吸收该路径 → 第二次是修改')
+  assert.equal(rec.turns.get(2).length, 1)
+})
+
+test('单轮上限生效', () => {
+  const rec = newRecorder(CWD)
+  for (let i = 0; i < 5; i += 1) recordPath(rec, 1, 'f' + i + '.txt', true, 3)
+  assert.equal(rec.turns.get(1).length, 3)
+})
+
+test('相对路径按登记器 cwd 解析', () => {
+  const rec = newRecorder(join(CWD, 'nested'))
+  recordPath(rec, 1, 'a.txt', true, 200)
+  assert.equal(rec.turns.get(1)[0].abs, join(CWD, 'nested', 'a.txt'))
+})
+
+// ── 报告组装 ──────────────────────────────────────────────────────────────
+
+test('官方摘要补漏并去重，补漏项算修改', () => {
+  const rec = newRecorder(CWD)
+  recordPath(rec, 3, 'mine.txt', true, 200)
+  const files = assembleReport(rec, CWD, 3, ['mine.txt', 'from-git.txt'])
+  assert.equal(files.length, 2)
+  assert.equal(files[0].name, 'mine.txt')
+  assert.equal(files[0].op, 'new')
+  assert.equal(files[1].name, 'from-git.txt')
+  assert.equal(files[1].op, 'edit')
+  assert.equal(files[1].exists, false, '测试文件不存在 → 界面会置灰')
+})
+
+test('无登记器时只报官方摘要', () => {
+  const files = assembleReport(undefined, CWD, 1, ['x/y.txt'])
+  assert.equal(files.length, 1)
+  assert.equal(files[0].abs, join(CWD, 'x', 'y.txt'))
+})
+
+test('display 在 cwd 内是正斜杠相对路径，cwd 外是绝对路径', () => {
+  const inside = join(CWD, 'a', 'b.txt')
+  assert.equal(displayPath(inside, CWD), 'a/b.txt')
+  assert.equal(displayPath('Z:' + sep + 'elsewhere' + sep + 'c.txt', CWD), 'Z:' + sep + 'elsewhere' + sep + 'c.txt')
+})
+
+// ── 路径安全 ──────────────────────────────────────────────────────────────
+
+test('candidateAbs 处理绝对路径、相对路径与 ~/', () => {
+  assert.equal(candidateAbs('rel.txt', CWD), join(CWD, 'rel.txt'))
+  assert.equal(candidateAbs(join(CWD, 'abs.txt'), CWD), join(CWD, 'abs.txt'))
+  assert.equal(candidateAbs('~/notes.txt', CWD), join(homedir(), 'notes.txt'))
+  assert.equal(candidateAbs('', CWD), '')
+  assert.equal(candidateAbs('rel.txt', ''), '')
+})
+
+test('isWithin 不把 /a/bc 当成 /a/b 的子路径', () => {
+  const base = join(CWD, 'a', 'b')
+  assert.equal(isWithin(base, join(base, 'c.txt')), true)
+  assert.equal(isWithin(base, base), true)
+  assert.equal(isWithin(base, join(CWD, 'a', 'bc', 'c.txt')), false)
+  assert.equal(isWithin(base, join(CWD, 'other.txt')), false)
+})
+
+test('isProbeable：cwd 内与家目录内放行，白名单根控权，越界拒绝', async () => {
+  const cwd = join(CWD, 'work')
+  assert.equal(isProbeable(join(cwd, 'a.txt'), cwd, []), true)
+  assert.equal(isProbeable(join(homedir(), 'a.txt'), cwd, []), true)
+
+  // 家目录之外的真实目录：白名单必须命中、且根下不得有系统盘特征目录
+  const foreignRoot = process.platform === 'win32' ? 'C:' + sep + 'dsh-goto-file-probe' : '/tmp/dsh-goto-file-probe'
+  await mkdir(foreignRoot, { recursive: true })
+  const probeFile = join(foreignRoot, 'probe.txt')
+  await writeFile(probeFile, 'probe\n', 'utf8')
+  try {
+    assert.equal(isWithin(homedir(), probeFile), false, '样本必须在家目录外，否则本用例无意义')
+    assert.equal(isProbeable(probeFile, cwd, []), false, '无白名单 → 拒绝')
+    assert.equal(isProbeable(probeFile, cwd, [foreignRoot]), true, '白名单根内 → 放行')
+    assert.equal(isProbeable(probeFile, cwd, [join(resolve(CWD, '..'), 'binary-farm')]), false, '同级目录不是祖先 → 拒绝')
+  } finally {
+    await rm(foreignRoot, { recursive: true, force: true })
+  }
+})
+
+test('normalizeRoots 展开 ~/、去空、去重', () => {
+  assert.deepEqual(normalizeRoots(['  /data/a  ', '/data/a', '', '~/d']), ['/data/a', join(homedir(), 'd')])
+})
+
+test('isSameOrigin 只接受本机 Origin / Host', () => {
+  assert.equal(isSameOrigin({ headers: { origin: 'http://127.0.0.1:19387' } }), true)
+  assert.equal(isSameOrigin({ headers: { origin: 'http://localhost:3000' } }), true)
+  assert.equal(isSameOrigin({ headers: { origin: 'https://evil.example.com' } }), false)
+  assert.equal(isSameOrigin({ headers: { host: '127.0.0.1:19387' } }), true)
+  assert.equal(isSameOrigin({ headers: { host: 'evil.example.com' } }), false)
+  assert.equal(isSameOrigin({ headers: {} }), false)
+})

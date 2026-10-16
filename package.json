@@ -1,0 +1,58 @@
+{
+  "name": "dsh-GotoFile",
+  "version": "1.0.0",
+  "description": "Turn-tail text report of the files this turn produced or modified, each with its full path; double-click a path to reveal it in the OS file manager",
+  "type": "module",
+  "main": "lib/index.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "docs",
+    "test"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "goto-file",
+    "changed-files",
+    "reveal-in-file-manager",
+    "web-ui",
+    "productivity"
+  ],
+  "license": "MIT",
+  "author": "SouthernSibyl",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SouthernSibyl/dsh-gotofile.git"
+  },
+  "homepage": "https://github.com/SouthernSibyl/dsh-gotofile#readme",
+  "bugs": {
+    "url": "https://github.com/SouthernSibyl/dsh-gotofile/issues"
+  },
+  "engines": {
+    "dsh": ">=0.1.7",
+    "node": ">=22"
+  },
+  "dsh": {
+    "compatibility": {
+      "dshReleases": {
+        "0.2.0-rc.2": "compatible"
+      }
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.1.7 || ^0.2.0",
+    "@deepseek-ai/cordis": "^4.0.1-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.3"
+  }
+}
