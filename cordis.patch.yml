@@ -3,4 +3,4 @@
 # 与浏览器侧（turn-tail 文本报告，由本包的 lib/client.js 提供）。
 - insert:
     - id: goto-file
-      name: dsh-GotoFile
+      name: dsh-gotofile

@@ -29,22 +29,29 @@ DSH 的官方「改动文件」卡片只活在浏览器里：要离开 GUI 读�
 
 ## 安装
 
-放进 **profile 的 `node_modules`**，然后在同一个 profile 的 `cordis.patch.yml` 末尾登记：
+已发布到 npm：**<https://www.npmjs.com/package/dsh-gotofile>**（包名只能小写，仓库与插件显示名仍写作 *dsh-GotoFile*）。
+
+```bash
+# 在 DSH profile 目录里（$DSH_HOME/profiles/<profile>）
+pnpm add dsh-gotofile        # 或 npm i dsh-gotofile
+```
+
+然后在同一个 profile 的 `cordis.patch.yml` 末尾登记（DSH 的插件市场/插件管理安装时也会自动写入这一行）：
 
 ```yaml
 - insert:
     - id: goto-file
-      name: dsh-GotoFile
+      name: dsh-gotofile
 ```
 
-典型位置：
+手动安装也行——把整包放进 profile 的 `node_modules`：
 
 ```
-<profile>/node_modules/dsh-GotoFile/
+<profile>/node_modules/dsh-gotofile/
 <profile>/cordis.patch.yml
 ```
 
-改完 `cordis.patch.yml` 需要**重启桌面端**（或重新加载 profile）才会挂载。挂载成功可以在插件管理里看到 `goto-file` / `dsh-GotoFile` / 状态 `active`。
+改完 `cordis.patch.yml` 需要**重启桌面端**（或重新加载 profile）才会挂载。挂载成功可以在插件管理里看到 `goto-file` / `dsh-gotofile` / 状态 `active`。
 
 ## 配置：外置盘 / 网络盘白名单
 
