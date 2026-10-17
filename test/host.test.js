@@ -18,6 +18,7 @@ import {
   isWithin,
   isProbeable,
   isSameOrigin,
+  isJsonRequest,
   normalizeRoots,
   newRecorder,
   recordPath,
@@ -56,11 +57,13 @@ test('mutationOf: str_replace_editor 只认 create/str_replace/insert', () => {
   assert.deepEqual(mutationOf('str_replace_editor', { command: 'str_replace', path: 'a.txt' }), { paths: ['a.txt'], declaredNew: false })
 })
 
-test('mutationOf: ops_replace 收 path 与非否定 glob，只读工具不登记', () => {
+test('mutationOf: ops_replace 收具体路径，glob 模式不登记', () => {
+  // glob 里的 `*.ts` 是模式不是路径：登记进去会在报告里变成「（已不存在）」的伪路径
   assert.deepEqual(
-    mutationOf('ops_replace', { path: 'src', pattern: 'a', replacement: 'b', glob: ['*.ts', '!*.test.ts'] }),
-    { paths: ['src', '*.ts'], declaredNew: false },
+    mutationOf('ops_replace', { path: 'src/a.ts', pattern: 'a', replacement: 'b', glob: ['*.ts', '!*.test.ts', 'lib/a.ts'] }),
+    { paths: ['src/a.ts', 'lib/a.ts'], declaredNew: false },
   )
+  assert.equal(mutationOf('ops_replace', { glob: ['**/*.js'] }), null, '只有模式、没有具体路径 → 不登记')
   for (const name of ['ops_bash', 'ops_grep', 'ops_glob', 'ops_inspect_local_file', 'present', undefined]) {
     assert.equal(mutationOf(name, { file_path: 'a.txt' }), null, String(name))
   }
@@ -147,10 +150,12 @@ test('display 在 cwd 内是正斜杠相对路径，cwd 外是绝对路径', () 
 
 // ── 路径安全 ──────────────────────────────────────────────────────────────
 
-test('candidateAbs 处理绝对路径、相对路径与 ~/', () => {
+test('candidateAbs 处理绝对路径、相对路径与 ~/、~\\', () => {
   assert.equal(candidateAbs('rel.txt', CWD), join(CWD, 'rel.txt'))
   assert.equal(candidateAbs(join(CWD, 'abs.txt'), CWD), join(CWD, 'abs.txt'))
   assert.equal(candidateAbs('~/notes.txt', CWD), join(homedir(), 'notes.txt'))
+  // Windows 习惯写法（资源管理器复制出来的就是反斜杠）
+  assert.equal(candidateAbs('~' + sep + 'notes.txt', CWD), join(homedir(), 'notes.txt'))
   assert.equal(candidateAbs('', CWD), '')
   assert.equal(candidateAbs('rel.txt', ''), '')
 })
@@ -161,6 +166,27 @@ test('isWithin 不把 /a/bc 当成 /a/b 的子路径', () => {
   assert.equal(isWithin(base, base), true)
   assert.equal(isWithin(base, join(CWD, 'a', 'bc', 'c.txt')), false)
   assert.equal(isWithin(base, join(CWD, 'other.txt')), false)
+})
+
+test('isWithin 认盘根（白名单写 D:\\ 时不能失效）', () => {
+  // 回归：旧实现手工去尾分隔符，把 'C:\' 裁成 'C:'，分隔符随之判成 '/'，盘根永远不匹配
+  const root = process.platform === 'win32' ? CWD.slice(0, 2) + sep : '/'
+  assert.equal(isWithin(root, join(root, 'any', 'deep', 'a.md')), true)
+  assert.equal(isWithin(root, root), true)
+  if (process.platform === 'win32') {
+    assert.equal(isWithin('C:\\', 'C:\\a\\b.md'), true, '带尾斜杠的盘根也要认')
+    assert.equal(isWithin('C:\\', 'D:\\a\\b.md'), false, '跨盘符不是子路径')
+  }
+})
+
+test('isWithin 在大小写不敏感平台按大小写不敏感比较', () => {
+  if (process.platform !== 'win32') {
+    // 类 Unix 上大小写不同就是不同路径，这条断言反过来固化语义
+    assert.equal(isWithin('/Users/A', '/users/a/b.txt'), false)
+    return
+  }
+  assert.equal(isWithin(CWD, CWD.toLowerCase() + '\\a.txt'), true)
+  assert.equal(isWithin(CWD.toUpperCase(), join(CWD, 'a.txt')), true)
 })
 
 test('isProbeable：cwd 内与家目录内放行，白名单根控权，越界拒绝', async () => {
@@ -183,15 +209,57 @@ test('isProbeable：cwd 内与家目录内放行，白名单根控权，越界�
   }
 })
 
-test('normalizeRoots 展开 ~/、去空、去重', () => {
-  assert.deepEqual(normalizeRoots(['  /data/a  ', '/data/a', '', '~/d']), ['/data/a', join(homedir(), 'd')])
+test('isProbeable：家目录里的凭据目录默认拒绝，显式白名单才放行', () => {
+  const cwd = join(CWD, 'work')
+  const plain = join(homedir(), 'notes.txt')
+  assert.equal(isProbeable(plain, cwd, []), true, '家目录普通文件默认放行')
+
+  // 这几个目录里是登录态/私钥/明文 token，交给系统默认程序打开等于交出账号
+  const sensitive = process.platform === 'win32'
+    ? [join(homedir(), 'AppData', 'Local', 'Microsoft', 'Edge', 'User Data', 'Default', 'Cookies'),
+       join(homedir(), '.ssh', 'id_rsa')]
+    : [join(homedir(), '.ssh', 'id_rsa'), join(homedir(), '.npmrc')]
+  for (const abs of sensitive) {
+    assert.equal(isWithin(homedir(), abs), true, '样本必须在家目录内，否则本用例无意义')
+    assert.equal(isProbeable(abs, cwd, []), false, '敏感目录默认拒绝: ' + abs)
+  }
 })
 
-test('isSameOrigin 只接受本机 Origin / Host', () => {
-  assert.equal(isSameOrigin({ headers: { origin: 'http://127.0.0.1:19387' } }), true)
-  assert.equal(isSameOrigin({ headers: { origin: 'http://localhost:3000' } }), true)
-  assert.equal(isSameOrigin({ headers: { origin: 'https://evil.example.com' } }), false)
-  assert.equal(isSameOrigin({ headers: { host: '127.0.0.1:19387' } }), true)
-  assert.equal(isSameOrigin({ headers: { host: 'evil.example.com' } }), false)
-  assert.equal(isSameOrigin({ headers: {} }), false)
+test('normalizeRoots：去空去重、~\\ 展开、盘根不被砍成盘符', () => {
+  const raw = '/data/a'
+  assert.deepEqual(
+    normalizeRoots(['  ' + raw + '  ', raw, '', '~' + sep + 'd']),
+    [resolve(raw), join(homedir(), 'd')],
+  )
+  if (process.platform === 'win32') {
+    // 回归：'D:\' 经手工去尾分隔符会变成 'D:'（= D 盘当前目录），盘根白名单随后失效
+    assert.deepEqual(normalizeRoots(['D:\\']), ['D:\\'])
+    assert.deepEqual(normalizeRoots(['D:']), ['D:\\'], '只写盘符补成盘根')
+    assert.deepEqual(normalizeRoots(['d:\\', 'D:\\']), ['D:\\'], '大小写不同视为同一个根')
+  }
+})
+
+test('isSameOrigin：本机同端口放行，其他本地端口与外部域名拒绝', () => {
+  const ok = (headers) => isSameOrigin({ headers })
+  assert.equal(ok({ host: '127.0.0.1:19387', origin: 'http://127.0.0.1:19387' }), true)
+  assert.equal(ok({ host: 'localhost:19387', origin: 'http://localhost:19387' }), true)
+  assert.equal(ok({ host: '127.0.0.1:19387', origin: 'http://localhost:19387' }), true, '同机同端口两种写法互认')
+  assert.equal(ok({ host: '127.0.0.1:19387', origin: 'http://localhost:5173' }), false, '本地别的端口 = 别的源')
+  assert.equal(ok({ host: '127.0.0.1:19387', origin: 'https://evil.example.com' }), false)
+  assert.equal(ok({ host: '127.0.0.1:19387', origin: 'null' }), false)
+  assert.equal(ok({ host: '127.0.0.1:19387' }), true, '无 Origin：同源 XHR / 非浏览器客户端')
+  assert.equal(ok({ host: '[::1]:19387', origin: 'http://[::1]:19387' }), true, 'IPv6 回环')
+  assert.equal(ok({ host: 'evil.example.com', origin: 'http://evil.example.com' }), false)
+  // 宿主转发丢了 Host 时退回「Origin 是本机形态」的宽松判定，避免功能整体 403
+  assert.equal(ok({ origin: 'http://127.0.0.1:19387' }), true, '缺 Host 但 Origin 是本机')
+  assert.equal(ok({}), false)
+})
+
+test('isJsonRequest：只接受 JSON，挡掉免预检的 text/plain', () => {
+  assert.equal(isJsonRequest({ headers: { 'content-type': 'application/json' } }), true)
+  assert.equal(isJsonRequest({ headers: { 'content-type': 'application/json; charset=utf-8' } }), true)
+  assert.equal(isJsonRequest({ headers: { 'content-type': 'application/vnd.api+json' } }), true)
+  assert.equal(isJsonRequest({ headers: { 'content-type': 'text/plain' } }), false)
+  assert.equal(isJsonRequest({ headers: { 'content-type': 'application/x-www-form-urlencoded' } }), false)
+  assert.equal(isJsonRequest({ headers: {} }), false)
 })

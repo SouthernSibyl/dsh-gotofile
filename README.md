@@ -7,9 +7,9 @@ DSH 的官方「改动文件」卡片只活在浏览器里：要离开 GUI 读�
 
 ```
 本轮产出 / 修改 3 个文件（双击路径在文件管理器中定位）        [复制全部]
-● 新  report.md      — E:\哈尼斯\项目\docs\report.md              📂
-● 改  index.js       — E:\哈尼斯\项目\src\index.js                 📂
-● 改  old-config.yml — E:\哈尼斯\项目\old-config.yml （已不存在）
+● 新  report.md      — E:\workspace\project\docs\report.md          📂
+● 改  index.js       — E:\workspace\project\src\index.js            📂
+● 改  old-config.yml — E:\workspace\project\old-config.yml （已不存在）
 ```
 
 真实运行效果（结尾的文本块：「已编辑 3 个文件」卡片是 DSH 自带的，下面一行才是本插件）：
@@ -25,7 +25,7 @@ DSH 的官方「改动文件」卡片只活在浏览器里：要离开 GUI 读�
 - **新 / 改 有区分**：本轮首次写入该路径 = **新**；改动一个已存在的文件 = **改**。
 - **失效文件自动置灰**：文件被外部删掉的行显示「（已不存在）」并禁用双击。
 - **零依赖、无构建**：两个源文件（宿主半 + 浏览器半），`node --test` 直接跑单测。
-- **默认就安全**：所有路由校验本机同源（防本地 CSRF）；只有会话工作目录 / 家目录 / 用户显式声明的白名单根里的路径才能被系统打开。
+- **默认就安全**：所有路由先过本机同源校验（Origin 的端口必须与请求 Host 的端口一致，本地别的开发端口一律拒绝），请求体只收 `application/json`；只有会话工作目录 / 家目录（凭据类目录除外）/ 用户显式声明的白名单根里的路径才能被系统打开。
 
 ## 安装
 
@@ -55,9 +55,11 @@ pnpm add dsh-gotofile        # 或 npm i dsh-gotofile
 
 ## 配置：外置盘 / 网络盘白名单
 
-`设置 → GotoFile`，每行一个根目录（支持 `~/`），**保存立即生效**，不用重启、不用改 YAML。
+`设置 → GotoFile`，每行一个根目录（支持 `~/` 与 `~\`），**保存立即生效**，不用重启、不用改 YAML。
 
-- 默认留空 = 只放行**家目录**与**会话工作目录**内的路径；其他位置的路径双击会被拒绝，报告里仍会列出但打开请求返回 404。
+- 默认留空 = 只放行**会话工作目录**与**家目录**内的路径；其他位置的路径双击会被拒绝，报告里仍会列出但打开请求返回 404。
+- 盘根可以直接填：`D:\`、`F:\` 都行（也接受只写 `D:`，会补成盘根；带不带尾斜杠、盘符大小写都不影响）。
+- 家目录里有一批**凭据类目录默认不放行**（`AppData`、`Library`、`.ssh`、`.aws`、`.gnupg`、`.kube`、`.docker`、`.npmrc`、`.netrc`、`.git-credentials`）——这些位置的文件一旦被系统默认程序打开，等于把本机账号交出去。确实需要时把它们写进白名单即可（写进去 = 显式授权）。
 - 系统盘特征目录（`C:\` 之类，即根下存在 `Windows` / `System` / `etc`）会被自动拒绝，避免一条白名单把整台机器敞开口。
 - 白名单根还会做 `realpath` 逃逸检查（symlink 不能溜出根）。
 
@@ -90,14 +92,14 @@ pnpm add dsh-gotofile        # 或 npm i dsh-gotofile
 | --- | --- |
 | `lib/index.js` | 宿主半：本轮改动登记簿 + 三条 API 路由 + 路径安全判定 + 系统打开 |
 | `lib/client.js` | 浏览器半：turn-tail 文本报告、双击委托、设置卡片 |
-| `test/host.test.js` | 宿主半纯逻辑单测（18 例，`node --test`） |
+| `test/host.test.js` | 宿主半纯逻辑单测（22 例，`node --test`） |
 | `docs/architecture.md` | 架构、数据流与关键决策 |
 | `cordis.patch.yml` | 供参考的挂载补丁片段 |
 
 ## 开发
 
 ```bash
-node --test        # 18 个单测，零依赖、无需 npm install
+node --test        # 22 个单测，零依赖、无需 npm install
 ```
 
 宿主半对 `@deepseek-ai/schemastery` 的依赖是**懒加载**的（挂载时才解析真包，解析不到就退回恒等形态），
@@ -106,6 +108,7 @@ node --test        # 18 个单测，零依赖、无需 npm install
 ## 已知边界
 
 - 外部命令产生的文件（`> out.txt`、`git checkout` 等）不在登记簿里，只能靠官方 `workspaceChanges` 的 git 快照补漏；**非 git 目录下这类改动不会出现**。
+- `ops_replace` 的 `glob` 参数是**模式**不是路径（`src/*.ts`、`**/*.js`），不会被展开成具体文件；那一轮登记的是它的 `path` 参数，glob 命中的文件靠官方快照补漏。
 - 单轮文件数上限 `maxFilesPerTurn`（默认 200），防止病态轮次撑爆登记簿。
 - 双击是浏览器手势，纯键盘用户可按 Enter（行有 `tabIndex`）触发定位。
 

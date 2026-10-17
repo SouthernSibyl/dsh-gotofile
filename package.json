@@ -1,6 +1,6 @@
 {
   "name": "dsh-gotofile",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Turn-tail text report of the files this turn produced or modified, each with its full path; double-click a path to reveal it in the OS file manager",
   "type": "module",
   "main": "lib/index.js",
