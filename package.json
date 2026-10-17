@@ -1,6 +1,6 @@
 {
   "name": "dsh-gotofile",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Turn-tail text report of the files this turn produced or modified, each with its full path; double-click a path to reveal it in the OS file manager",
   "type": "module",
   "main": "lib/index.js",
@@ -51,6 +51,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
     },
     "compatibility": {
       "dshReleases": {
