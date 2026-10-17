@@ -63,6 +63,15 @@ pnpm add dsh-gotofile        # 或 npm i dsh-gotofile
 - 系统盘特征目录（`C:\` 之类，即根下存在 `Windows` / `System` / `etc`）会被自动拒绝，避免一条白名单把整台机器敞开口。
 - 白名单根还会做 `realpath` 逃逸检查（symlink 不能溜出根）。
 
+## 权限：它会碰什么
+
+- **会话**：只监听 `session/event` 里的 `tool/call` 与 `tool/result`，读取工具名和路径参数并配对；不读对话正文，不改会话数据，不落盘。
+- **文件**：只对报告里的路径做存在性检查（`existsSync` / `statSync`）；「打开」交给系统文件管理器（Windows `explorer`、macOS `open -R`、Linux `xdg-open`），经 `execFile` 直传参数、不经 shell，不会执行文件内容。
+- **路径范围**：会话工作目录、家目录（`AppData` / `.ssh` / `.npmrc` 等凭据类目录默认拒绝）、你显式声明的白名单根。
+- **网络**：**不联网**。没有遥测、没有外部请求；三条路由只服务本机，且校验同源与端口。
+
+*What it touches: session tool events (names + path arguments only, message text is not read), file existence checks, the OS file manager for reveal/open, and no network at all.*
+
 ## 工作原理（一图）
 
 ```
