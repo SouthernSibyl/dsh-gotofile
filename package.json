@@ -1,6 +1,6 @@
 {
   "name": "dsh-gotofile",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Turn-tail text report of the files this turn produced or modified, each with its full path; double-click a path to reveal it in the OS file manager",
   "type": "module",
   "main": "lib/index.js",
@@ -62,7 +62,8 @@
     },
     "compatibility": {
       "dshReleases": {
-        "0.2.0-rc.2": "compatible"
+        "0.2.0-rc.2": "compatible",
+        "0.2.1-rc.2": "compatible"
       }
     }
   },

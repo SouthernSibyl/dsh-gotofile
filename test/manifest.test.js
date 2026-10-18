@@ -54,3 +54,36 @@ test('exports["./package.json"] 与 exports["."] 都在，宿主半入口存在'
   assert.equal(typeof main, 'string')
   assert.ok(existsSync(join(root, main)), `宿主半入口不存在: ${main}`)
 })
+
+/**
+ * dsh 0.2.1-rc 起，客户端加载器（dsh-client-modules）按**包名**核对：
+ * 「这个 client.js 执行完，有没有注册我要的那个 id」。
+ * 注册成大驼峰 dsh-GotoFile 时它会报
+ *   `loaded without registering "dsh-gotofile"` + `already executed without registering`
+ * 并让整个 web boot 失败（桌面端窗口直接显示"无法使用"）。
+ * 0.2.0 时代按插件 name 校验，所以这个错在升级前看不出来。
+ */
+test('client bundle 的注册 id 必须等于包名', () => {
+  const src = readFileSync(join(root, pkg.exports['./client']), 'utf8')
+  const m = src.match(/__ModuleLoader__\.load\(\{\s*\n?\s*id:\s*["']([^"']+)["']/)
+  assert.ok(m !== null, '没找到 __ModuleLoader__.load({ id: ... })')
+  assert.equal(
+    m[1],
+    pkg.name,
+    `注册 id 必须是包名 ${pkg.name}（现在是 ${m[1]}），否则 0.2.1+ 判定为"没注册"`,
+  )
+})
+
+/**
+ * 插件页的配置位按 `${bundle 包名}#${行 id}` 归类（见 client-ui-plugin-manager 的
+ * rowConfigKey）。写错前缀的表现是设置卡片挂在插件页上不显示/找不到 → 改不了配置。
+ */
+test('设置卡片的 slot key 用「包名#条目 id」', () => {
+  const src = readFileSync(join(root, pkg.exports['./client']), 'utf8')
+  const row = src.match(/ROW_CONFIG_KEY\s*=\s*["']([^"']+)["']/)
+  assert.ok(row !== null, '没找到 ROW_CONFIG_KEY')
+  assert.equal(row[1], `${pkg.name}#goto-file`, 'plugins.row.config 的 key 必须是 包名#行 id')
+  const bundleKey = src.match(/plugins\.bundle\.config["']?\s*,\s*key:\s*["']([^"']+)["']/)
+  assert.ok(bundleKey !== null, '没找到 plugins.bundle.config 的 key')
+  assert.equal(bundleKey[1], pkg.name, 'plugins.bundle.config 的 key 必须是包名')
+})

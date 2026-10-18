@@ -24,6 +24,7 @@ import {
   recordPath,
   onSessionEvent,
   assembleReport,
+  Config,
 } from '../lib/index.js'
 
 /** 模拟平台路径拼接（测试跨平台可跑） */
@@ -262,4 +263,26 @@ test('isJsonRequest：只接受 JSON，挡掉免预检的 text/plain', () => {
   assert.equal(isJsonRequest({ headers: { 'content-type': 'text/plain' } }), false)
   assert.equal(isJsonRequest({ headers: { 'content-type': 'application/x-www-form-urlencoded' } }), false)
   assert.equal(isJsonRequest({ headers: {} }), false)
+})
+
+/**
+ * 0.2.1-rc 起 cordis 的 resolveConfig 改读 Standard Schema：
+ * `runtime.Config['~standard'].validate(config)`，且**必须是同步的**。
+ * Config 只挂可执行函数的老形态在那边会抛
+ *   TypeError: Cannot read properties of undefined (reading 'validate')
+ * 整个 web boot 失败。旧宿主仍按 Config(config) 调，所以两副面孔都要守住。
+ */
+test('Config 同时支持 Standard Schema（0.2.1+）与函数形态（0.2.0）', async () => {
+  const std = Config['~standard']
+  assert.ok(std !== undefined, '缺少 ~standard：0.2.1+ 挂载会抛 reading validate of undefined')
+  assert.equal(std.version, 1)
+  const result = std.validate({})
+  assert.equal(typeof result?.then, 'undefined', '~standard.validate 不能返回 Promise（宿主会拒绝）')
+  assert.deepEqual(result.value, { extraProbeRoots: [], maxFilesPerTurn: 200 })
+  assert.equal(std.validate({ maxFilesPerTurn: 5 }).value.maxFilesPerTurn, 5)
+  assert.equal(std.validate(undefined).value.maxFilesPerTurn, 200)
+
+  // 旧宿主：Config(config) 返回 Promise
+  const legacy = await Config({})
+  assert.equal(legacy.maxFilesPerTurn, 200)
 })
