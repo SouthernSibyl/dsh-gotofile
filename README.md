@@ -19,7 +19,7 @@ DSH 的官方「改动文件」卡片只活在浏览器里：要离开 GUI 读�
 ## 特性
 
 - **文本，不是卡片**：整段可选中、可复制（右上角「复制全部」一键拷走全部绝对路径），粘贴到哪里都好用。
-- **双击即定位**：双击路径文本 → Windows 资源管理器 / macOS Finder / Linux 文件管理器打开并**选中**该文件（`explorer /select,`、`open -R`、`xdg-open`）。
+- **双击即定位**：双击路径文本 → Windows 资源管理器（`explorer /select,`）与 macOS Finder（`open -R`）会打开并**选中**该文件；Linux 没有统一的「在文件管理器中选中」接口，`xdg-open` 只能**打开文件本身**（目录则打开该目录）。
 - **正文里的路径也能双击**：`` `src/index.js` `` 这种裸路径、或手动选中的一段路径，双击同样生效——不用回到报告里找。
 - **只记真的写成功的**：登记 `write` / `edit` / `str_replace_editor` / `ops_replace` 的**成功**调用，失败的、只读的调用一律不出现。
 - **新 / 改 有区分**：本轮首次写入该路径 = **新**；改动一个已存在的文件 = **改**。
@@ -31,10 +31,21 @@ DSH 的官方「改动文件」卡片只活在浏览器里：要离开 GUI 读�
 
 已发布到 npm：**<https://www.npmjs.com/package/dsh-gotofile>**（包名只能小写，仓库与插件显示名仍写作 *dsh-GotoFile*）。
 
+**方式一：官方 CLI（推荐）**
+
 ```bash
-# 在 DSH profile 目录里（$DSH_HOME/profiles/<profile>）
-pnpm add dsh-gotofile        # 或 npm i dsh-gotofile
+# 先退出桌面端客户端：desktop profile 在桌面端运行时被独占，plugin 命令会被拒绝
+dsh plugin --profile desktop add dsh-gotofile
 ```
+
+**方式二：手动装进 profile**
+
+```bash
+cd "$DSH_HOME/profiles/desktop"     # Windows 下类似 E:\...\2-DSH运行数据\profiles\desktop
+pnpm add dsh-gotofile               # 或 npm i dsh-gotofile
+```
+
+装完 `package.json` 里应该有 `"dsh-gotofile": "^1.0.4"`（`dependencies`）与 `dsh.profile.bundles` 里的一项 —— 后者是它出现在**插件管理**列表里的前提（只把目录塞进 `node_modules` 而不写依赖，宿主侧能挂载，但插件管理里看不到它）。
 
 然后在同一个 profile 的 `cordis.patch.yml` 末尾登记（DSH 的插件市场/插件管理安装时也会自动写入这一行）：
 
@@ -101,14 +112,14 @@ pnpm add dsh-gotofile        # 或 npm i dsh-gotofile
 | --- | --- |
 | `lib/index.js` | 宿主半：本轮改动登记簿 + 三条 API 路由 + 路径安全判定 + 系统打开 |
 | `lib/client.js` | 浏览器半：turn-tail 文本报告、双击委托、设置卡片 |
-| `test/host.test.js` | 宿主半纯逻辑单测（22 例，`node --test`） |
+| `test/` | 单测：`host.test.js`（宿主半纯逻辑）+ `manifest.test.js`（包清单一致性），共 30 例，`node --test` |
 | `docs/architecture.md` | 架构、数据流与关键决策 |
 | `cordis.patch.yml` | 供参考的挂载补丁片段 |
 
 ## 开发
 
 ```bash
-node --test        # 22 个单测，零依赖、无需 npm install
+node --test        # 30 个单测，零依赖、无需 npm install
 ```
 
 宿主半对 `@deepseek-ai/schemastery` 的依赖是**懒加载**的（挂载时才解析真包，解析不到就退回恒等形态），
@@ -119,6 +130,7 @@ node --test        # 22 个单测，零依赖、无需 npm install
 - 外部命令产生的文件（`> out.txt`、`git checkout` 等）不在登记簿里，只能靠官方 `workspaceChanges` 的 git 快照补漏；**非 git 目录下这类改动不会出现**。
 - `ops_replace` 的 `glob` 参数是**模式**不是路径（`src/*.ts`、`**/*.js`），不会被展开成具体文件；那一轮登记的是它的 `path` 参数，glob 命中的文件靠官方快照补漏。
 - 单轮文件数上限 `maxFilesPerTurn`（默认 200），防止病态轮次撑爆登记簿。
+- **Linux 上双击是「打开」不是「定位选中」**：`xdg-open` 没有选中参数，双击会用默认程序打开该文件（目录则打开目录）。Windows / macOS 才是资源管理器 / Finder 里定位选中。
 - 双击是浏览器手势，纯键盘用户可按 Enter（行有 `tabIndex`）触发定位。
 
 ## License

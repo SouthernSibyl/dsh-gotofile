@@ -8,7 +8,7 @@
 
 对话**结尾**以**文本**方式列出本轮产出 / 修改的文件（文件名 + 完整绝对路径 + 新/改标记），
 **双击**某条路径即可在系统文件管理器（Windows 资源管理器 / macOS Finder / Linux 文件管理器）
-中定位选中该文件。
+中定位选中该文件。Linux 只能打开文件本身（`xdg-open` 无「选中」语义），见文末第 12 条。
 
 ## 数据流
 
@@ -91,6 +91,10 @@
 11. **请求体只收 `application/json`**：`text/plain` 的 body 在浏览器里是「简单请求」，不触发 CORS
    预检就能打到本机端口，而 `readBody` 只做 `JSON.parse`（不看 content-type）。限制类型后，跨站页面
    想发 JSON 就必须先过预检，本服务不响应预检 → 请求被浏览器挡下。
+12. **Linux 的 reveal 只能是 open**：`explorer /select,` 与 `open -R` 都有明确的「选中」参数，
+   `xdg-open` 没有——它只按 MIME 类型用默认程序打开文件。所以 Linux 上双击 = 打开文件本身
+   （目录则打开目录），不是「定位并选中」。要真选中得按文件管理器分别走 D-Bus
+   （Nautilus `org.freedesktop.FileManager1.ShowItems`、Dolphin `--select` 等），本插件不做。
 
 ## 配置（外置盘白名单）
 
