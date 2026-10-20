@@ -127,6 +127,9 @@ node --test        # 30 个单测，零依赖、无需 npm install
 
 ## 已知边界
 
+- **PTC / 单一 `run_code` 模式**：工具面被收拢成一个 `run_code` 之后，写文件不再是独立的 `write` / `edit` 调用，
+  而是脚本里的 `tools.write({ file_path: "..." })` / `tools.edit({ file_path: "..." })`。本插件会解析脚本提取这些字面量路径
+  （变量路径、含 `${...}` 的模板串跳过——宁可漏报也不猜）。脚本里用 `pwsh` 重定向写出的文件仍然只能靠官方快照补漏。
 - 外部命令产生的文件（`> out.txt`、`git checkout` 等）不在登记簿里，只能靠官方 `workspaceChanges` 的 git 快照补漏；**非 git 目录下这类改动不会出现**。
 - `ops_replace` 的 `glob` 参数是**模式**不是路径（`src/*.ts`、`**/*.js`），不会被展开成具体文件；那一轮登记的是它的 `path` 参数，glob 命中的文件靠官方快照补漏。
 - 单轮文件数上限 `maxFilesPerTurn`（默认 200），防止病态轮次撑爆登记簿。

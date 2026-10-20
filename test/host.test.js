@@ -13,6 +13,7 @@ import { resolve, sep } from 'node:path'
 import {
   parseArgs,
   mutationOf,
+  mutationsFromCode,
   candidateAbs,
   displayPath,
   isWithin,
@@ -68,6 +69,78 @@ test('mutationOf: ops_replace 收具体路径，glob 模式不登记', () => {
   for (const name of ['ops_bash', 'ops_grep', 'ops_glob', 'ops_inspect_local_file', 'present', undefined]) {
     assert.equal(mutationOf(name, { file_path: 'a.txt' }), null, String(name))
   }
+})
+
+// ── PTC 模式：写文件藏在 run_code 的脚本里 ────────────────────────────────
+// 收拢成单一 run_code 之后，按工具名认领的登记簿会一次都命不中（实测一个 1478 次
+// tool/call 的会话里全是 run_code），所以必须从脚本里提取 tools.write / tools.edit。
+
+test('mutationsFromCode: 提取字面量路径，跳过变量与插值模板串', () => {
+  const code = [
+    'await tools.write({ file_path: "src/a.cs", content: body });',
+    "await tools.edit({ file_path: 'src/b.cs', old_string: '', new_string: 'y' });",
+    'await tools.edit({ file_path: `src/c.cs`, old_string: "old", new_string: "new" });',
+    'const p = "src/d.cs";',
+    'await tools.write({ file_path: p, content: body });',
+    'await tools.write({ file_path: `src/${name}.cs`, content: body });',
+    'await tools.read({ file_path: "src/e.cs" });',
+  ].join('\n')
+
+  assert.deepEqual(mutationsFromCode(code), [
+    { path: 'src/a.cs', declaredNew: true },
+    { path: 'src/b.cs', declaredNew: true },
+    { path: 'src/c.cs', declaredNew: false },
+  ])
+})
+
+test('mutationsFromCode: 一次脚本里写多个文件都收，且不串到下个调用', () => {
+  const code = [
+    'await tools.write({ file_path: "a/one.cs", content: a });',
+    'await tools.write({ file_path: "a/two.cs", content: b });',
+    'await tools.edit({ file_path: "a/three.json", old_string: x, new_string: y });',
+  ].join('\n')
+  const items = mutationsFromCode(code)
+  assert.equal(items.length, 3)
+  assert.deepEqual(items.map((item) => item.path), ['a/one.cs', 'a/two.cs', 'a/three.json'])
+  // 变量 old_string 取不到字面量 → 保持 false（当作修改，不冒认新建）
+  assert.equal(items[2].declaredNew, false)
+})
+
+test('mutationsFromCode: 空输入 / 语法不完整不抛错', () => {
+  assert.deepEqual(mutationsFromCode(''), [])
+  assert.deepEqual(mutationsFromCode(undefined), [])
+  assert.deepEqual(mutationsFromCode('await tools.write({'), [])
+  assert.deepEqual(mutationsFromCode('tools.write({ file_path: "" })'), [])
+})
+
+test('mutationOf: run_code 走脚本解析，只读脚本返回 null', () => {
+  assert.deepEqual(
+    mutationOf('run_code', { description: 'x', code: 'await tools.write({ file_path: "a.txt", content: "" });' }),
+    { items: [{ path: 'a.txt', declaredNew: true }] },
+  )
+  assert.equal(mutationOf('run_code', { code: 'await tools.read({ file_path: "a.txt" });' }), null)
+  assert.equal(mutationOf('run_code', {}), null)
+})
+
+test('onSessionEvent: PTC 的 run_code 成功后登记，失败或只读不动登记簿', () => {
+  const rec = newRecorder(CWD)
+  const code = 'await tools.write({ file_path: "ptc-a.txt", content: "x" });\nawait tools.edit({ file_path: "ptc-b.txt", old_string: "a", new_string: "b" });'
+
+  // 失败的一次：不登记
+  onSessionEvent(rec, toolCall('run_code', { code }, 'r1', 1), 200)
+  onSessionEvent(rec, toolResult('r1', true, 1), 200)
+  assert.equal(rec.turns.size, 0, '失败的 run_code 不能留下记录')
+
+  // 成功的一次：两个路径都进来，且各自带 new / edit
+  onSessionEvent(rec, toolCall('run_code', { code }, 'r2', 1), 200)
+  onSessionEvent(rec, toolResult('r2', false, 1), 200)
+  const list = rec.turns.get(1)
+  assert.deepEqual(list.map((row) => row.abs), [join(CWD, 'ptc-a.txt'), join(CWD, 'ptc-b.txt')])
+  assert.deepEqual(list.map((row) => row.op), ['new', 'edit'])
+
+  // 只读脚本：不进 pending，也不会被结算
+  onSessionEvent(rec, toolCall('run_code', { code: 'await tools.read({ file_path: "x.txt" });' }, 'r3', 2), 200)
+  assert.equal(rec.pending.size, 0)
 })
 
 // ── call / result 配对 ────────────────────────────────────────────────────

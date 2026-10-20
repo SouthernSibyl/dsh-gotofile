@@ -18,7 +18,8 @@
    ▼
 ┌────────────────────── 宿主半 lib/index.js ──────────────────────────┐
 │ ctx.on('session/event')                                            │
-│   tool/call   ──► pending.set(callId, {turn, paths, declaredNew})   │
+│   tool/call   ──► pending.set(callId, {turn, items[]})              │
+│                   write/edit 直接给路径；run_code（PTC）先解析脚本  │
 │   tool/result ──► 成功才 recordPath()；isError / 无结果一律丢弃     │
 │      ┌──────────────────────────────────────────────────────────┐   │
 │      │ rec = { cwd, turns: Map<turn,file[]>, known: Set, pending}│   │
@@ -57,6 +58,13 @@
 
 ## 关键决策与坑（源码级查证）
 
+0. **PTC 模式把工具面收拢成单一 `run_code`，登记簿必须解析脚本**：DSH 的 `presentation: 'ptc'`
+   （梁神模式）让模型只能调 `run_code`，写文件变成脚本里的 `tools.write({ file_path })` /
+   `tools.edit({ file_path })`。实测一个 1478 次 tool/call 的会话里 **1478 次全是 run_code，write/edit 0 次**，
+   按工具名认领的实现**一次都命不中**，报告永远是空的（表现为"插件装好了但什么都不显示"，无任何报错）。
+   现在 `mutationsFromCode()` 按 `tools.*` 调用切窗口提取 `file_path` 字面量；变量路径与含 `${...}`
+   的模板串跳过——宁可漏报，也不把猜出来的路径写进报告。回放该会话：120 次调用解析出 243 条路径，
+   第 2 轮报告 10 条真实文件。
 1. **登记时机用 `session/event`，不用 `tools/pre-execute`**：真实会话日志里
    `tool/call` 带 `{turn, step, callId, name, arguments}`（arguments 是 JSON 字符串），
    `tool/result` 带 `{turn, step, toolCallId, message:{isError}, sourceEventSeqs}`。
