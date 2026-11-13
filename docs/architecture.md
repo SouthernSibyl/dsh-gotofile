@@ -14,20 +14,26 @@
 
 ```
  一轮对话
-   │  工具调用（write / edit / str_replace_editor / ops_replace）
+   │  工具调用（write / edit / ops_write_file / str_replace_editor / ops_replace /
+   │            run_code 脚本 / pwsh / ops_bash / win_bash / present）
    ▼
 ┌────────────────────── 宿主半 lib/index.js ──────────────────────────┐
 │ ctx.on('session/event')                                            │
-│   tool/call   ──► pending.set(callId, {turn, items[]})              │
-│                   write/edit 直接给路径；run_code（PTC）先解析脚本  │
+│   tool/call   ──► pending.set(callId, {turn, items[], existedBefore})│
+│                   write/edit 直接给路径；run_code 静态求值脚本      │
+│                   （字面量 → const 绑定 → a + b 拼接 → path.join）；│
+│                   pwsh/ops_bash 解析重定向与 Set-Content/tee/cp    │
 │   tool/result ──► 成功才 recordPath()；isError / 无结果一律丢弃     │
 │      ┌──────────────────────────────────────────────────────────┐   │
-│      │ rec = { cwd, turns: Map<turn,file[]>, known: Set, pending}│   │
-│      │ op：declaredNew 且 known 未收录 → 'new'，否则 'edit'      │   │
+│      │ rec = { cwd, turns: Map<turn,file[]>, known: Set,         │   │
+│      │         pending, changeSeq: Map<turn,seq>, lastTurn }     │   │
+│      │ op：声明新建且未收录 → 'new'；声明修改 → 'edit'；         │   │
+│      │     命令类（无声明）→ 看调用前是否存在                    │   │
 │      └──────────────────────────────────────────────────────────┘   │
-│ 只登记顶层会话：origin==='subagent' 或 delegationDepth>0 直接跳过   │
+│ 顶层会话自己一个登记器；一层子代理（depth=1）写入挂到父会话当前轮  │
 │                                                                    │
-│ 可选补漏：ctx.get('workspaceChanges').summary(sessionId, turn)     │
+│ workspace/changes 事件 → changeSeq.set(turn, event.seq)            │
+│ 可选补漏：ctx.workspaceChanges.summary(sessionId, seq)             │
 │   → 官方权威改动清单（含 git 快照），追加登记簿未覆盖的路径        │
 │   服务缺失 / 无记录 → 静默降级为空数组，不影响主流程               │
 │                                                                    │
@@ -42,9 +48,9 @@
 │    turn/start 建 context；assistant/message 抽取路径；              │
 │    buildLocationData 把 state 发布到 turn.data（唯一发布通道）      │
 │ ② turnTail slots.inject('conversation.chat.turnTail')               │
-│    select：turn.data.mentionedPaths 为空 → 让位（返回 null），       │
-│    有内容 → 组件向 /check 取**权威**清单（与正文提到什么无关），      │
-│    每行渲染 `● 新/改 文件名 — 完整绝对路径` + 📂 按钮               │
+│    select **恒返回真值**（不再要求正文里出现路径）→ 组件挂载，       │
+│    向 /check 取权威清单；空清单自己返回 null，不留视觉噪音。         │
+│    每行渲染 `● 新/改 文件名 — 完整绝对路径` + 📂 定位 + ↗ 打开      │
 │ ③ 双击：路径文本 onClick 里判 event.detail === 2 → /open reveal     │
 │    正文双击委托（document dblclick）同样处理裸 <code> / 选中文本     │
 │ ④ 设置卡片：settings.section + plugins.row.config +                 │
@@ -62,15 +68,23 @@
    （梁神模式）让模型只能调 `run_code`，写文件变成脚本里的 `tools.write({ file_path })` /
    `tools.edit({ file_path })`。实测一个 1478 次 tool/call 的会话里 **1478 次全是 run_code，write/edit 0 次**，
    按工具名认领的实现**一次都命不中**，报告永远是空的（表现为"插件装好了但什么都不显示"，无任何报错）。
-   现在 `mutationsFromCode()` 按 `tools.*` 调用切窗口提取 `file_path` 字面量；变量路径与含 `${...}`
-   的模板串跳过——宁可漏报，也不把猜出来的路径写进报告。回放该会话：120 次调用解析出 243 条路径，
-   第 2 轮报告 10 条真实文件。
+   1.0.5 只认 `file_path:` 后面紧跟的字面量，回放 192 个会话发现 **6053 个 `tools.write/edit` 块里
+   4558 个（75%）写的是变量或拼接**（`const p = "…"` 后写 `p`、`WB + "/app/web/wall.html"`），
+   而 HTML 恰恰最常这样写——"接不住 HTML" 的根因就在这里。现在做了一层静态求值：
+   字面量 / `const` 绑定（多轮解析，允许链式）/ `a + b` 拼接 / `path.join`、`resolve` /
+   不含未知插值的模板串；求不出来仍返回 null（宁可漏报，不猜路径）。
+   同一轮扫描还接上了 `tools.present({files:[{path}]})`、`tools.ops_write_file`、`fs.writeFile*`、
+   `python open(...,'w')` 与 `Path(...).write_text`。回放同一批会话：命中路径 5186 → 9180，
+   `.html` 163 → 495。
 1. **登记时机用 `session/event`，不用 `tools/pre-execute`**：真实会话日志里
    `tool/call` 带 `{turn, step, callId, name, arguments}`（arguments 是 JSON 字符串），
    `tool/result` 带 `{turn, step, toolCallId, message:{isError}, sourceEventSeqs}`。
    配对才能区分成功与失败；`tools/pre-execute` 只有调用前信息，会给失败/只读调用记账。
 2. **官方 `workspaceChanges.summary` 的第二参数是「宣告事件的 seq」，不是轮次号。**
-   本插件不做硬假设：传轮次号，命中就补漏，未命中返回空数组（登记簿仍是主来源）。
+   宿主源码的 `workspace/changes` 事件体只有 `{turn}`，seq 在事件行上：
+   `{"type":"workspace/changes","seq":515,"data":{"turn":4}}`。所以先订阅该事件建
+   `turn → seq` 映射，`/check` 时用 seq 调 `summary()`；拿不到映射才退回传轮次号碰运气。
+   （旧实现一直传轮次号，等于这条补漏路径基本没生效。）
 3. **`chatFileMentions` 单例被官方 deliverables 占用**（`ctx.provide` 重复注册直接抛错），
    所以正文里的路径只能靠 **DOM 双击委托** 变可点，不能扩展官方渲染层。
 4. **官方 `openFile` 不是系统打开**（= `workspaces.openPath`，DSH 内部预览）；
@@ -103,6 +117,22 @@
    `xdg-open` 没有——它只按 MIME 类型用默认程序打开文件。所以 Linux 上双击 = 打开文件本身
    （目录则打开目录），不是「定位并选中」。要真选中得按文件管理器分别走 D-Bus
    （Nautilus `org.freedesktop.FileManager1.ShowItems`、Dolphin `--select` 等），本插件不做。
+13. **turnTail 的 `select` 必须恒返回真值**：旧实现只在「正文里出现过路径」时才挂载组件
+   （`mentionedPaths` 非空），于是模型回一句「生成好了，已预览」——HTML 产物最典型的收尾——
+   整轮报告直接不渲染，宿主明明有数据。现在 `select` 恒返回 `{paths}`，组件挂载后向
+   `/check` 取权威清单，空清单自己 `return null`。代价是每轮多一次本机 POST（毫秒级）。
+14. **子代理的写入要归到父会话，不能丢**：这台机器 192 个会话目录里绝大多数是 `origin=subagent`、
+   `delegationDepth=1` 的子会话；旧实现直接 `return`，等于把大半产物排除在外。子会话没有父会话的
+   轮次号（它自己的 `turn` 从 1 开始），所以按父登记器的 `lastTurn` 归属：父会话最后一次
+   `tool/call` 的轮次就是当前轮。只归一层的，更深层不归并（避免轮次错位）。
+15. **命令通道要解析，但要防误报**：`pwsh`（3624 次）、`ops_bash`（807 次）是产出文件的常规路径，
+   而它们的目标藏在 `>` / `>>` / `Set-Content -Path` / `tee` / `cp` 里。解析时把「代码片段」
+   排除掉——含引号、换行、括号、花括号、分号、管道、` + ` 的 token 一律不是路径
+   （PowerShell here-string 里的 `>` 曾把半截表达式记成产物）；`$var`、`%TEMP%`、`/dev/null`、
+   `NUL` 同样跳过。命令类写入没有 new/edit 声明，`op` 用「调用前是否存在」判定。
+16. **登记过 = 放行**：工作区在 `C:`、产物落 `E:` 是常态，只按 cwd + 家目录 + 白名单判定会把
+   一半路径标成「不在允许范围」。`/open` 与 `/check` 都额外接受「本会话登记簿里出现过的路径」——
+   那是宿主亲眼看到写成功的文件，不是外部可探测的任意路径；官方快照补进来的越界路径仍需白名单。
 
 ## 配置（外置盘白名单）
 
@@ -112,7 +142,9 @@
 
 ## 已知边界
 
-- 通过 `ops_bash` 等外部命令产生的文件（例如 `> out.txt`、`git checkout`）不在登记簿里，
-  只能靠官方 `workspaceChanges` 的 git 快照补漏；非 git 目录下这类改动不会出现。
+- 命令里的变量目标（`Set-Content -Path $p`、`> %TEMP%\x.html`）无法静态求值，不会登记；
+  同一条命令里的字面量目标照常登记。`git checkout` 之类不写具体路径的改动只能靠官方快照。
+- 登记簿是内存态：DSH 重启后旧轮次没有报告（官方快照同样在重启后失效）。
+- 只归并一层子代理；更深的委派链不归并。
 - 被其他进程改名的文件会显示为「已不存在」并置灰，双击无效。
 - 单轮文件数上限 `maxFilesPerTurn`（默认 200）之外的条目被忽略，防止病态轮次撑爆登记簿。

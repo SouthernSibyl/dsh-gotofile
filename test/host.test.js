@@ -14,6 +14,7 @@ import {
   parseArgs,
   mutationOf,
   mutationsFromCode,
+  mutationsFromCommand,
   candidateAbs,
   displayPath,
   isWithin,
@@ -25,6 +26,7 @@ import {
   recordPath,
   onSessionEvent,
   assembleReport,
+  knownPaths,
   Config,
 } from '../lib/index.js'
 
@@ -75,7 +77,7 @@ test('mutationOf: ops_replace 收具体路径，glob 模式不登记', () => {
 // 收拢成单一 run_code 之后，按工具名认领的登记簿会一次都命不中（实测一个 1478 次
 // tool/call 的会话里全是 run_code），所以必须从脚本里提取 tools.write / tools.edit。
 
-test('mutationsFromCode: 提取字面量路径，跳过变量与插值模板串', () => {
+test('mutationsFromCode: 字面量、const 变量、拼接都能解出；插值模板串跳过', () => {
   const code = [
     'await tools.write({ file_path: "src/a.cs", content: body });',
     "await tools.edit({ file_path: 'src/b.cs', old_string: '', new_string: 'y' });",
@@ -90,7 +92,92 @@ test('mutationsFromCode: 提取字面量路径，跳过变量与插值模板串'
     { path: 'src/a.cs', declaredNew: true },
     { path: 'src/b.cs', declaredNew: true },
     { path: 'src/c.cs', declaredNew: false },
+    // 实测 75% 的 tools.write 都写变量：`const p = "…"` 之后写 p
+    { path: 'src/d.cs', declaredNew: true },
   ])
+})
+
+test('mutationsFromCode: 目录变量 + 拼接（HTML 的典型写法）', () => {
+  const code = [
+    'const WB = "C:/work/app";',
+    'const page = WB + "/web/wall.html";',
+    'await tools.write({ file_path: page, content: html });',
+    'await tools.write({ file_path: WB + "/web/index.html", content: html });',
+    'await tools.write({ file_path: path.join(WB, "web", "about.htm"), content: html });',
+    'await tools.write({ file_path: `${WB}/web/${slug}.html`, content: html });',
+  ].join('\n')
+  assert.deepEqual(mutationsFromCode(code), [
+    { path: 'C:/work/app/web/wall.html', declaredNew: true },
+    { path: 'C:/work/app/web/index.html', declaredNew: true },
+    { path: 'C:/work/app/web/about.htm', declaredNew: true },
+  ])
+})
+
+test('mutationsFromCode: fs 写入、python 写入、present 清单都算产物', () => {
+  const code = [
+    'fs.writeFileSync("out/report.html", html);',
+    'await fs.promises.writeFile("out/data.json", json);',
+    'fs.appendFileSync("logs/run.log", line);',
+    'await tools.present({ files: [{ path: "out/report.html", description: "预览" }, { path: "out/chart.svg" }] });',
+    'await tools.ops_write_file({ path: "notes.md", content: "x" });',
+    'open("out/table.csv", "w").write(rows);',
+    'p = Path("out/pic.txt"); p.write_text("x");',
+    'open("in/read.csv", "r").read();',
+  ].join('\n')
+  assert.deepEqual(mutationsFromCode(code).map((item) => item.path).sort(), [
+    'logs/run.log',
+    'notes.md',
+    'out/chart.svg',
+    'out/data.json',
+    'out/report.html',
+    'out/table.csv',
+  ])
+})
+
+test('mutationsFromCode: Windows 路径的反斜杠不被吃掉', () => {
+  // 代码文本里是单反斜杠（`\U` 这类未知转义要保留分隔符）
+  const single = 'await tools.write({ file_path: "C:\\Users\\me\\a.html", content: "" });'
+  assert.equal(mutationsFromCode(single)[0].path, 'C:\\Users\\me\\a.html')
+  // 代码文本里是转义过的双反斜杠（`\\` 收敛成一个）
+  const doubled = 'await tools.write({ file_path: "C:\\\\Users\\\\me\\\\b.html", content: "" });'
+  assert.equal(mutationsFromCode(doubled)[0].path, 'C:\\Users\\me\\b.html')
+})
+
+test('mutationsFromCommand: 重定向 / Set-Content / tee / cp 的目标', () => {
+  assert.deepEqual(
+    mutationsFromCommand('node build.js > dist/index.html 2>/dev/null && echo ok >> logs/build.log'),
+    ['dist/index.html', 'logs/build.log'],
+  )
+  assert.deepEqual(
+    mutationsFromCommand("Set-Content -LiteralPath 'E:\\out\\报告.md' -Value $text -Encoding UTF8"),
+    ['E:\\out\\报告.md'],
+  )
+  assert.deepEqual(mutationsFromCommand('echo hi | tee -a run.log'), ['run.log'])
+  assert.deepEqual(mutationsFromCommand('cp -r src/ E:/backup/src/'), ['E:/backup/src/'])
+  // 设备、变量目标、开关不算路径
+  assert.deepEqual(mutationsFromCommand('cmd 2>&1 >/dev/null; Set-Content -Path $p -Value x'), [])
+})
+
+test('mutationOf: pwsh / ops_bash 走命令解析，只读命令不登记', () => {
+  const hit = mutationOf('pwsh', { command: 'python gen.py > out/page.html' })
+  assert.deepEqual(hit, { paths: ['out/page.html'], declaredNew: undefined })
+  assert.equal(mutationOf('pwsh', { command: 'Get-ChildItem -Recurse' }), null)
+  assert.equal(mutationOf('ops_bash', { command: 'git status' }), null)
+})
+
+test('mutationOf: present 的 files 就是本轮交付清单', () => {
+  assert.deepEqual(
+    mutationOf('present', { files: [{ path: 'a/index.html', description: '预览' }, { path: 'a/app.js' }] }),
+    { paths: ['a/index.html', 'a/app.js'], declaredNew: undefined },
+  )
+  assert.equal(mutationOf('present', { files: [] }), null)
+})
+
+test('mutationOf: 未知写类工具走兜底，只读工具不登记', () => {
+  assert.deepEqual(mutationOf('write_file', { path: 'x/y.html' }), { paths: ['x/y.html'], declaredNew: true })
+  assert.deepEqual(mutationOf('save_file', { file_path: 'x/y.md' }), { paths: ['x/y.md'], declaredNew: true })
+  assert.equal(mutationOf('read_file', { path: 'x/y.md' }), null)
+  assert.equal(mutationOf('list_files', { path: 'x' }), null)
 })
 
 test('mutationsFromCode: 一次脚本里写多个文件都收，且不串到下个调用', () => {
@@ -196,7 +283,64 @@ test('相对路径按登记器 cwd 解析', () => {
   assert.equal(rec.turns.get(1)[0].abs, join(CWD, 'nested', 'a.txt'))
 })
 
-// ── 报告组装 ──────────────────────────────────────────────────────────────
+// ── shell 写入的 new/edit 判定 ────────────────────────────────────────────
+
+test('recordPath：没有声明时按调用前是否存在判定 new/edit', () => {
+  const rec = newRecorder(CWD)
+  recordPath(rec, 1, 'fresh.html', undefined, 200, false)
+  assert.equal(rec.turns.get(1)[0].op, 'new', '调用前不存在 → 新')
+
+  const rec2 = newRecorder(CWD)
+  recordPath(rec2, 1, 'old.html', undefined, 200, true)
+  assert.equal(rec2.turns.get(1)[0].op, 'edit', '调用前已存在 → 改')
+
+  // 同一轮里第二次写回：本次会话已收录 → 改
+  recordPath(rec2, 1, 'old.html', undefined, 200, true)
+  assert.equal(rec2.turns.get(1).length, 1)
+  recordPath(rec2, 2, 'old.html', undefined, 200, false)
+  assert.equal(rec2.turns.get(2)[0].op, 'edit')
+})
+
+test('knownPaths：跨轮去重后的规范化路径集合', () => {
+  const rec = newRecorder(CWD)
+  recordPath(rec, 1, 'a/one.html', true, 200)
+  recordPath(rec, 2, 'a/two.html', true, 200)
+  const known = knownPaths(rec)
+  assert.equal(known.size, 2)
+  assert.equal(known.has(join(CWD, 'a', 'one.html').replace(/\\/g, '/').toLowerCase()), true)
+  assert.equal(knownPaths(undefined).size, 0)
+})
+
+test('assembleReport：本会话登记过的路径即 probeable，范围外且没登记过则 false', () => {
+  const rec = newRecorder(CWD)
+  recordPath(rec, 1, 'mine.html', true, 200)
+  const files = assembleReport(rec, CWD, 1, ['Z:\\elsewhere\\from-git.html'], {
+    roots: [],
+    known: knownPaths(rec),
+  })
+  assert.equal(files[0].probeable, true)
+  assert.equal(files[1].probeable, false, '官方摘要里的越界路径仍需白名单')
+})
+
+test('workspace/changes 记下 seq，官方摘要按 seq 取', () => {
+  const rec = newRecorder(CWD)
+  onSessionEvent(rec, { type: 'workspace/changes', seq: 515, data: { turn: 4 } }, 200)
+  assert.equal(rec.changeSeq.get(4), 515)
+  // 乱序 / 缺字段不写
+  onSessionEvent(rec, { type: 'workspace/changes', data: { turn: 5 } }, 200)
+  assert.equal(rec.changeSeq.has(5), false)
+})
+
+test('onSessionEvent：turnOverride 把子代理的写入挂到父会话轮次', () => {
+  const rec = newRecorder(CWD)
+  onSessionEvent(rec, toolCall('write', { file_path: 'child.html' }, 'c1', 1), 200, 7)
+  onSessionEvent(rec, toolResult('c1', false, 1), 200, 7)
+  assert.equal(rec.turns.has(1), false, '不能落到子代理自己的轮次号')
+  assert.equal(rec.turns.get(7)[0].abs, join(CWD, 'child.html'))
+  assert.equal(rec.lastTurn, 7)
+})
+
+// ── 官方摘要补漏 ──────────────────────────────────────────────────────────
 
 test('官方摘要补漏并去重，补漏项算修改', () => {
   const rec = newRecorder(CWD)
